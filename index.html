@@ -36,6 +36,9 @@ button{font:inherit;cursor:pointer}
 .val{font-weight:700;white-space:nowrap}
 .val.r{color:var(--rec)}.val.d{color:var(--des)}
 .pago .cor strong,.pago .val{opacity:.5}
+.st{margin-left:auto;align-self:center;font-size:12px;color:var(--mut)}
+[hidden]{display:none!important}
+#delBox .acoes{flex-wrap:wrap}#delBox .acoes button{flex:1 1 45%}
 .vazio{padding:28px 16px;text-align:center;color:var(--mut)}
 .fab{position:fixed;right:max(16px,calc(50% - 304px));bottom:max(20px,env(safe-area-inset-bottom));background:var(--rec);color:#fff;border:0;border-radius:999px;padding:14px 22px;font-weight:700;box-shadow:0 6px 18px #1b2b3440}
 .cfg{position:fixed;left:max(16px,calc(50% - 304px));bottom:max(20px,env(safe-area-inset-bottom));background:var(--card);border:1px solid var(--line);border-radius:999px;padding:14px 18px;color:var(--mut)}
@@ -80,6 +83,7 @@ input,select,textarea{width:100%;font:inherit;padding:10px 12px;border:1px solid
     <button data-f="todos" class="on">Todos</button>
     <button data-f="pendentes">Pendentes</button>
     <button data-f="pagos">Pagos</button>
+    <span class="st" id="status"></span>
   </div>
   <div class="lista" id="lista"></div>
 </main>
@@ -102,10 +106,11 @@ input,select,textarea{width:100%;font:inherit;padding:10px 12px;border:1px solid
   <input id="fCat" list="cats" placeholder="Ex.: Moradia">
   <datalist id="cats"><option>Moradia<option>Contas<option>Mercado<option>Transporte<option>Saúde<option>Educação<option>Lazer<option>Salário<option>Outros</datalist>
   <label for="fObs">Observação</label><textarea id="fObs" rows="2"></textarea>
-  <div id="repWrap"><label for="fRep">Repetir por quantos meses?</label><input id="fRep" type="number" min="1" max="60" value="1"></div>
+  <div id="repWrap"><label for="fRep">Parcelado em quantas vezes? (1 = pagamento único)</label><input id="fRep" type="number" min="1" max="60" value="1"><p class="nota" style="margin-top:4px">O valor informado acima é o de cada parcela. Uma parcela é criada por mês.</p></div>
   <label class="chk"><input type="checkbox" id="fPago"><span id="fPagoTxt">Já está pago</span></label>
   <div class="msg" id="erro" style="color:var(--des)"></div>
-  <div class="acoes">
+  <div id="delBox" hidden></div>
+  <div class="acoes" id="acMain">
     <button id="cancelar">Cancelar</button>
     <button class="del" id="excluir" hidden>Excluir</button>
     <button class="pri" id="salvar">Salvar</button>
@@ -142,7 +147,8 @@ const dm=d=>d.slice(8,10)+'/'+d.slice(5,7);
 function ler(k,def){try{return JSON.parse(localStorage.getItem(k))??def}catch{return def}}
 function gravar(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch{}}
 let db=ler(K,[]), mes=hoje().slice(0,7), filtro='todos', editando=null;
-const salvarDb=()=>gravar(K,db);
+let tLocal=ler('gastos.t',0), timer;
+function salvarDb(){tLocal=Math.max(Date.now(),tLocal+1);gravar('gastos.t',tLocal);gravar(K,db);agenda()}
 
 function mudaMes(n){const [y,m]=mes.split('-').map(Number);const d=new Date(y,m-1+n,1);mes=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');render()}
 const soma=a=>a.reduce((t,x)=>t+x.valor,0);
@@ -162,7 +168,7 @@ function render(){
     return `<div class="it ${x.pago?'pago':''}">
       <button class="ck ${x.pago?'ok':''}" data-id="${x.id}" data-a="baixa" aria-label="${x.pago?'Desfazer baixa':'Dar baixa'}">${x.pago?'✓':''}</button>
       <button class="cor" data-id="${x.id}" data-a="edit"><strong>${esc(x.desc)}</strong>
-      <small>${atraso?'<span class="late">Atrasado · </span>':''}${x.tipo==='receita'?'Entra':'Vence'} ${dm(x.venc)}${x.cat?' · '+esc(x.cat):''}</small></button>
+      <small>${atraso?'<span class="late">Atrasado · </span>':''}${x.tipo==='receita'?'Entra':'Vence'} ${dm(x.venc)}${x.tot>1?' · <b>Parcela '+x.par+'/'+x.tot+'</b>':''}${x.cat?' · '+esc(x.cat):''}</small></button>
       <span class="val ${x.tipo==='receita'?'r':'d'}">${sinal}${brl(x.valor)}</span></div>`}).join('')
     :'<div class="vazio">Nenhum lançamento neste filtro. Toque em “Novo lançamento” para começar.</div>';
   document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.f===filtro));
@@ -186,11 +192,28 @@ function abrir(x){
   $('#fVenc').value=x?x.venc:(mes===hoje().slice(0,7)?hoje():mes+'-01');
   $('#fCat').value=x?x.cat:''; $('#fObs').value=x?x.obs:''; $('#fPago').checked=x?x.pago:false;
   $('#fRep').value=1; $('#repWrap').hidden=!!x; $('#excluir').hidden=!x; $('#erro').textContent='';
+  $('#delBox').hidden=true;$('#acMain').hidden=false;
   $('#dlg').showModal();
 }
 $('#novo').onclick=()=>abrir(null);
 $('#cancelar').onclick=()=>$('#dlg').close();
-$('#excluir').onclick=()=>{if(confirm('Excluir este lançamento?')){db=db.filter(i=>i!==editando);salvarDb();$('#dlg').close();render()}};
+$('#excluir').onclick=()=>{
+  const x=db.find(i=>i.id===editando.id)||editando;
+  const serie=x.gid?db.filter(i=>i.gid===x.gid):[];
+  $('#delBox').innerHTML=`<p class="nota" style="color:var(--ink);font-size:15px;margin-top:14px">Excluir “${esc(x.desc)}”?</p><div class="acoes">`+
+    (serie.length>1?'<button data-d="um">Só esta parcela</button><button data-d="prox">Esta e as próximas</button><button class="del" data-d="todas">Todas as parcelas</button>':'<button class="del" data-d="um">Sim, excluir</button>')+
+    '<button data-d="nao">Voltar</button></div>';
+  $('#delBox').hidden=false;$('#acMain').hidden=true;
+};
+$('#delBox').onclick=e=>{
+  const d=e.target.dataset.d;if(!d)return;
+  if(d!=='nao'){
+    const x=db.find(i=>i.id===editando.id)||editando;
+    db=db.filter(i=>d==='um'?i.id!==x.id:d==='prox'?!(i.gid===x.gid&&i.venc>=x.venc):i.gid!==x.gid);
+    salvarDb();$('#dlg').close();render();return;
+  }
+  $('#delBox').hidden=true;$('#acMain').hidden=false;
+};
 
 function valorNum(t){t=t.trim();return t.includes(',')?parseFloat(t.replace(/\./g,'').replace(',','.')):parseFloat(t)}
 function somaMes(data,i){
@@ -202,11 +225,11 @@ $('#salvar').onclick=()=>{
   const desc=$('#fDesc').value.trim(), valor=valorNum($('#fVal').value), venc=$('#fVenc').value;
   if(!desc||!(valor>0)||!venc){$('#erro').textContent='Preencha descrição, valor maior que zero e vencimento.';return}
   const base={tipo:tipoSel(),desc,valor,venc,cat:$('#fCat').value.trim(),obs:$('#fObs').value.trim(),pago:$('#fPago').checked};
-  if(editando){Object.assign(editando,base,{pagoEm:base.pago?(editando.pagoEm||hoje()):null})}
+  if(editando){const alvo=db.find(i=>i.id===editando.id)||editando;Object.assign(alvo,base,{pagoEm:base.pago?(alvo.pagoEm||hoje()):null})}
   else{
-    const n=Math.max(1,Math.min(60,parseInt($('#fRep').value)||1));
+    const n=Math.max(1,Math.min(60,parseInt($('#fRep').value)||1)), gid=n>1?Date.now().toString(36)+Math.random().toString(36).slice(2,6):undefined;
     for(let i=0;i<n;i++)db.push({...base,id:Date.now().toString(36)+i+Math.random().toString(36).slice(2,6),
-      desc:n>1?`${desc} (${i+1}/${n})`:desc,venc:somaMes(venc,i),pago:i===0&&base.pago,pagoEm:i===0&&base.pago?hoje():null});
+      gid,par:i+1,tot:n,venc:somaMes(venc,i),pago:i===0&&base.pago,pagoEm:i===0&&base.pago?hoje():null});
   }
   salvarDb();$('#dlg').close();mes=venc.slice(0,7);render();
 };
@@ -221,25 +244,40 @@ async function gh(path,c,opt={}){
 }
 $('#abrirCfg').onclick=()=>{const c=ler(S,{});$('#cToken').value=c.token||'';$('#gist').value=c.gist||'';msg('');$('#dlgCfg').showModal()};
 $('#fechaCfg').onclick=()=>{lerCfg();$('#dlgCfg').close()};
+const st=t=>{const e=$('#status');if(e)e.textContent=t};
+async function nuvemLer(c){
+  const g=await gh('/gists/'+c.gist,c);const f=g.files['gastos.json'];
+  const n=JSON.parse(f.truncated?await (await fetch(f.raw_url)).text():f.content);
+  return Array.isArray(n)?{t:0,db:n}:{t:n.t||0,db:n.db};
+}
+async function nuvemEnviar(c){
+  const files={'gastos.json':{content:JSON.stringify({t:tLocal,db})}};
+  if(c.gist)await gh('/gists/'+c.gist,c,{method:'PATCH',body:JSON.stringify({files})});
+  else{const g=await gh('/gists',c,{method:'POST',body:JSON.stringify({description:'Meus gastos',public:false,files})});c.gist=g.id;gravar(S,c);$('#gist').value=g.id}
+}
+function agenda(){clearTimeout(timer);timer=setTimeout(async()=>{const c=ler(S,{});if(!c.token)return;st('Sincronizando…');try{await nuvemEnviar(c);st('Sincronizado')}catch(e){st('Erro ao sincronizar')}},1200)}
+async function puxar(){
+  const c=ler(S,{});if(!c.token||!c.gist)return;
+  st('Sincronizando…');
+  try{
+    const n=await nuvemLer(c);
+    if(n.t>tLocal){db=n.db;tLocal=n.t;gravar(K,db);gravar('gastos.t',tLocal);render()}
+    else if(tLocal>n.t)await nuvemEnviar(c);
+    st('Sincronizado');
+  }catch(e){st('Sem conexão com a nuvem')}
+}
 $('#enviar').onclick=async()=>{
   const c=lerCfg();if(!c.token){msg('Cole o token do GitHub primeiro.');return}
   msg('Enviando…');
-  try{
-    const files={'gastos.json':{content:JSON.stringify(db)}};
-    if(c.gist)await gh('/gists/'+c.gist,c,{method:'PATCH',body:JSON.stringify({files})});
-    else{const g=await gh('/gists',c,{method:'POST',body:JSON.stringify({description:'Meus gastos',public:false,files})});c.gist=g.id;gravar(S,c);$('#gist').value=g.id}
-    msg('Enviado. Para usar em outro aparelho, informe o mesmo token e o ID do Gist e toque em “Baixar da nuvem”.');
-  }catch(e){msg(e.message)}
+  try{tLocal=Date.now();gravar('gastos.t',tLocal);await nuvemEnviar(c);msg('Enviado. A partir de agora a sincronia é automática neste aparelho.')}catch(e){msg(e.message)}
 };
 $('#baixar').onclick=async()=>{
   const c=lerCfg();if(!c.token||!c.gist){msg('Informe o token e o ID do Gist.');return}
   if(!confirm('Isso substitui os dados deste aparelho pelos da nuvem. Continuar?'))return;
   msg('Baixando…');
   try{
-    const g=await gh('/gists/'+c.gist,c);const f=g.files['gastos.json'];
-    const txt=f.truncated?await (await fetch(f.raw_url)).text():f.content;
-    const novo=JSON.parse(txt);if(!Array.isArray(novo))throw new Error('Arquivo da nuvem em formato inesperado.');
-    db=novo;salvarDb();render();msg('Dados baixados.');
+    const n=await nuvemLer(c);if(!Array.isArray(n.db))throw new Error('Arquivo da nuvem em formato inesperado.');
+    db=n.db;tLocal=n.t||Date.now();gravar(K,db);gravar('gastos.t',tLocal);render();msg('Dados baixados. A sincronia agora é automática.');
   }catch(e){msg(e.message)}
 };
 $('#exportar').onclick=()=>{
@@ -249,12 +287,14 @@ $('#exportar').onclick=()=>{
 $('#importar').onclick=()=>$('#arq').click();
 $('#arq').onchange=async e=>{
   const f=e.target.files[0];if(!f)return;
-  try{const novo=JSON.parse(await f.text());if(!Array.isArray(novo))throw 0;
-    if(confirm('Isso substitui os dados deste aparelho. Continuar?')){db=novo;salvarDb();render();msg('Backup importado.')}
+  try{const novo=JSON.parse(await f.text());if(!Array.isArray(novo)&&!Array.isArray(novo.db))throw 0;
+    if(confirm('Isso substitui os dados deste aparelho. Continuar?')){db=novo.db||novo;salvarDb();render();msg('Backup importado.')}
   }catch{msg('Arquivo inválido.')}
   e.target.value='';
 };
 render();
+puxar();
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)puxar()});
 </script>
 </body>
 </html>
